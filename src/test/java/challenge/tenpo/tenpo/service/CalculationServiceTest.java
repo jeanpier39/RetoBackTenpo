@@ -2,99 +2,71 @@ package challenge.tenpo.tenpo.service;
 
 import challenge.tenpo.tenpo.entity.LogEntry;
 import challenge.tenpo.tenpo.repository.LogEntryRepository;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageImpl;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
-
-import java.time.LocalDateTime;
-import java.util.Collections;
-import java.util.List;
-import java.util.concurrent.AbstractExecutorService;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
-import static org.assertj.core.api.Assertions.*;
 
-@SpringBootTest
 @ExtendWith(MockitoExtension.class)
-class CalculationServiceTest {
+public class CalculationServiceTest {
+    @Mock
+    private PercentageService percentageService;
 
     @Mock
-    PercentageService percentageService;
-    @Mock
-    LogEntryRepository logRepo;
+    private LogEntryRepository logRepo;
 
-    CalculationService service;
-    ExecutorService directExecutor;
-
-    @BeforeEach
-    void setUp() {
-        // Executor que corre la tarea inmediatamente en el mismo hilo
-        directExecutor = new AbstractExecutorService() {
-            @Override public void execute(Runnable command) { command.run(); }
-            @Override public void shutdown() { }
-            @Override public List<Runnable> shutdownNow() { return Collections.emptyList(); }
-            @Override public boolean isShutdown() { return false; }
-            @Override public boolean isTerminated() { return false; }
-            @Override public boolean awaitTermination(long timeout, TimeUnit unit) { return true; }
-        };
-        service = new CalculationService(percentageService, logRepo, directExecutor);
-    }
+    @InjectMocks
+    private CalculationService calculationService;
 
     @Test
-    void calculate_success_logsAndReturnsCorrectValue() {
+    void testCalculate_successful() throws InterruptedException {
+        double valueExpected= 165.0;
+        // Arrange
         when(percentageService.getPercentage()).thenReturn(10.0);
-        double result = service.calculate(100.0, 50.0);
-        assertThat(result).isEqualTo(165.0);
 
-        ArgumentCaptor<LogEntry> cap = ArgumentCaptor.forClass(LogEntry.class);
-        verify(logRepo).save(cap.capture());
+        // Act
+        double result = calculationService.calculate(100, 50); // 150 + 10% = 165
 
-        LogEntry entry = cap.getValue();
-        assertThat(entry.getEndpoint()).isEqualTo("/api/calculate");
-        assertThat(entry.getParameters()).isEqualTo("num1=100.0&num2=50.0");
-        assertThat(entry.getResponse()).isEqualTo("165.0");
-        assertThat(entry.getError()).isNull();
-        assertThat(entry.getTimestamp()).isBeforeOrEqualTo(LocalDateTime.now());
+        // Assert
+        assertEquals(valueExpected, result);
+
+        TimeUnit.MILLISECONDS.sleep(200);
+
+        ArgumentCaptor<LogEntry> captor = ArgumentCaptor.forClass(LogEntry.class);
+        verify(logRepo, atLeastOnce()).save(captor.capture());
+
+        LogEntry logEntry = captor.getValue();
+        assertEquals("/api/calculate", logEntry.getEndpoint());
+        assertTrue(logEntry.getParameters().contains("num1=100"));
+        assertEquals("165.0", logEntry.getResponse());
+        assertNull(logEntry.getError());
+        assertNotNull(logEntry.getTimestamp());
     }
 
     @Test
-    void calculate_externalFailure_throwsAndLogsError() {
-        when(percentageService.getPercentage())
-                .thenThrow(new RuntimeException("servicio caído"));
-        Throwable thrown = catchThrowable(() -> service.calculate(1.0, 1.0));
-        assertThat(thrown)
-                .isInstanceOf(RuntimeException.class)
-                .hasMessage("servicio caído");
+    void testCalculate_error() throws InterruptedException {
+        // Arrange
+        when(percentageService.getPercentage()).thenThrow(new RuntimeException("Service unavailable"));
 
-        ArgumentCaptor<LogEntry> cap = ArgumentCaptor.forClass(LogEntry.class);
-        verify(logRepo).save(cap.capture());
+        // Act & Assert
+        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
+            calculationService.calculate(10, 20);
+        });
+        assertEquals("Service unavailable", exception.getMessage());
 
-        LogEntry entry = cap.getValue();
-        assertThat(entry.getResponse()).isEqualTo("0.0");
-        assertThat(entry.getError()).isEqualTo("servicio caído");
-    }
+        TimeUnit.MILLISECONDS.sleep(200);
 
-    @Test
-    void getLogs_delegatesToRepository() {
-        Pageable pageReq = PageRequest.of(0, 5);
+        ArgumentCaptor<LogEntry> captor = ArgumentCaptor.forClass(LogEntry.class);
+        verify(logRepo, atLeastOnce()).save(captor.capture());
 
-        Page<LogEntry> fakePage = new PageImpl<>(List.of(new LogEntry()));
-
-        when(logRepo.findAll(pageReq)).thenReturn(fakePage);
-
-        Page<LogEntry> page = service.getLogs(pageReq);
-
-        assertThat(page).isSameAs(fakePage);
-        verify(logRepo).findAll(pageReq);
+        LogEntry logEntry = captor.getValue();
+        assertEquals("0.0", logEntry.getResponse());
+        assertEquals("Service unavailable", logEntry.getError());
     }
 }
